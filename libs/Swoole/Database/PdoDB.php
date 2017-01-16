@@ -62,6 +62,11 @@ class PdoDB extends \PDO implements Swoole\IDatabase
             implode(", ", $this->errorInfo()) . "<hr />$sql"
         );
         $this->lastStatement = $res;
+        //非查询语句直接返回结果
+        if ($sql[0] !== 's')
+        {
+            return !empty($res);
+        }
         return $res;
     }
 
@@ -172,4 +177,10 @@ class PdoDB extends \PDO implements Swoole\IDatabase
 	{
 		unset($this);
 	}
+
+    function quote($str)
+    {
+        $safeStr = parent::quote($str);
+        return substr($safeStr, 1, strlen($safeStr) - 2);
+    }
 }

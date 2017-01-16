@@ -1,20 +1,27 @@
 <?php
 namespace App\Controller;
+use Hoa\Core\Exception\Exception;
 use Swoole;
 use App;
 
 class Page extends Swoole\Controller
 {
+    function __construct($swoole)
+    {
+        parent::__construct($swoole);
+    }
+
     //hello world
     function index()
     {
         $this->http->header('Content-Type', 'text/html; charset=UTF-8');
+        $this->trace('Hello', 'World');
         return $this->showTrace(true);
     }
 
     function detail()
     {
-        var_dump($_GET);
+        var_dump($this->request->get);
     }
 
     //数据库测试
@@ -88,7 +95,12 @@ class Page extends Swoole\Controller
     {
         $this->session->start();
         $this->http->header('Content-Type', 'image/jpeg');
-        Swoole\Image::verifycode_gd();
+        $verifyCode = Swoole\Image::verifycode_chinese('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc');
+//        debug($verifyCode);
+//        $verifyCode = Swoole\Image::verifycode_gd();
+//        $verifyCode = Swoole\Image::verifycode_imagick();
+        $_SESSION['vcode'] = $verifyCode['code'];
+        return $verifyCode['image'];
     }
 
     //class autoload
@@ -173,7 +185,7 @@ class Page extends Swoole\Controller
         }
         else
         {
-            echo "Bad Request\n";
+            $this->display();
         }
     }
 
@@ -185,6 +197,7 @@ class Page extends Swoole\Controller
 
     function ip()
     {
+        throw new \Exception("Swoole");
         echo "My ip is ".Swoole\Client::getIP()."\n";
     }
 }

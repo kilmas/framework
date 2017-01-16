@@ -15,7 +15,7 @@ class Controller extends Object
 
     protected $tpl_var = array();
     protected $template_dir;
-    protected $trace = array();
+    protected $traceInfo = array();
     protected $model;
     protected $config;
 
@@ -24,12 +24,15 @@ class Controller extends Object
         $this->swoole = $swoole;
         $this->model = $swoole->model;
         $this->config = $swoole->config;
-        $this->template_dir = \Swoole::$app_path.'/templates/';
+        $this->template_dir = \Swoole::$app_path . '/templates/';
         if (!defined('TPL_PATH'))
         {
             define('TPL_PATH', $this->template_dir);
         }
-        if ($this->if_filter) Filter::request();
+        if ($this->if_filter)
+        {
+            Filter::request();
+        }
         $swoole->__init();
     }
 
@@ -38,17 +41,18 @@ class Controller extends Object
      * @param $title
      * @param $value
      */
-    protected function trace($title,$value='')
+    protected function trace($title, $value = '')
     {
-        if(is_array($title))
+        if (is_array($title))
         {
-            $this->trace = array_merge($this->trace,$title);
+            $this->traceInfo = array_merge($this->traceInfo, $title);
         }
         else
         {
-            $this->trace[$title] = $value;
+            $this->traceInfo[$title] = $value;
         }
     }
+
     function fetch($tpl_file ='')
     {
         ob_start();
@@ -136,32 +140,39 @@ class Controller extends Object
         $showTime .= ' | 内存占用:' . $runtime['memory'];
         return $showTime;
     }
+
     /**
      * 显示跟踪信息
-     * @param $detail
-     * @return unknown_type
+     * @return string
      */
-    public function showTrace($detail=false)
+    public function showTrace()
     {
         $_trace =   array();
         $included_files = get_included_files();
 
         // 系统默认显示信息
-        $_trace['请求脚本'] = $_SERVER['SCRIPT_NAME'];
+        if (!empty($this->request->server['SCRIPT_NAME']))
+        {
+            $_trace['请求脚本'] = $this->request->server['SCRIPT_NAME'];
+        }
+
         $_trace['请求方法'] = $this->swoole->env['mvc']['controller'].'/'.$this->swoole->env['mvc']['view'];
-        $_trace['USER_AGENT'] = $_SERVER['HTTP_USER_AGENT'];
-        $_trace['HTTP版本'] = $_SERVER['SERVER_PROTOCOL'];
-        $_trace['请求时间'] = date('Y-m-d H:i:s', $_SERVER['REQUEST_TIME']);
+        $_trace['USER_AGENT'] = $this->request->server['HTTP_USER_AGENT'];
+        $_trace['HTTP版本'] = $this->request->server['SERVER_PROTOCOL'];
+        $_trace['请求时间'] = date('Y-m-d H:i:s', $this->request->server['REQUEST_TIME']);
 
         if (isset($_SESSION))
         {
             $_trace['SESSION_ID'] = session_id();
         }
-        $_trace['读取数据库'] = $this->swoole->db->read_times . '次';
-        $_trace['写入数据库'] = $this->swoole->db->write_times . '次';
+        if ($this->swoole->db instanceof \Swoole\Database)
+        {
+            $_trace['读取数据库'] = $this->swoole->db->read_times . '次';
+            $_trace['写入数据库'] = $this->swoole->db->write_times . '次';
+        }
         $_trace['加载文件数目'] = count($included_files);
         $_trace['PHP执行占用'] = $this->showTime();
-        $_trace = array_merge($this->trace,$_trace);
+        $_trace = array_merge($this->traceInfo, $_trace);
 
         // 调用Trace页面模板
         $html = <<<HTMLS
@@ -176,24 +187,65 @@ border:				#999 1px solid;
 padding:			20px 20px 12px 20px;
 }
 </style>
-	<div id="content">
-		<fieldset id="querybox" style="margin:5px;">
-		<div style="overflow:auto;height:800px;text-align:left;">
+	<div>
+		<fieldset style="margin:5px;">
+		<div style="overflow:auto;text-align:left;">
 HTMLS;
+        $html .= "<a href='".Tool::url_merge('_show_request', '1')."'>显示请求参数</a> |
+        <a href='".Tool::url_merge('_show_session', '1')."'>显示会话信息</a> |
+        <a href='".Tool::url_merge('_show_files', '1')."'>显示加载的PHP文件</a>
+        <hr/>";
         foreach ($_trace as $key => $info)
         {
             $html .= $key . ' : ' . $info . BL;
         }
-        if ($detail)
+        if (!empty($this->request->get['_show_files']))
         {
             //输出包含的文件
-            $html .= '加载的文件' . BL;
+            $html .= '加载的文件：' . BL."<pre style='color: #666'>";
             foreach ($included_files as $file)
             {
-                $html .= 'require ' . $file . BL;
+                $html .= $file . "\n";
             }
+            $html .= "</pre>";
         }
-        $html .= "</div></fieldset></div>";
+        $html .= "</div></fieldset>";
+        $html .= "</div>";
+
+        if (!empty($this->request->get['_show_request']))
+        {
+            $output = '<fieldset style="margin:5px;"><div style="overflow:auto;text-align:left;">';
+            $request = $this->swoole->request;
+            $output .= "<h2>HEADER:</h2>".Tool::dump($request->header);
+            $output .= "<h2>SERVER:</h2>".Tool::dump($request->server);
+            if (!empty($request->files))
+            {
+                $output .= "<h2>FILE:</h2>".Tool::dump($request->files);
+            }
+            if (!empty($request->cookie))
+            {
+                $output .= "<h2>COOKIES:</h2>".Tool::dump($request->cookie);
+            }
+            if (!empty($request->get))
+            {
+                $output .= "<h2>GET:</h2>".Tool::dump($this->swoole->request->get);
+            }
+            if (!empty($request->post))
+            {
+                $output .= "<h2>POST:</h2>".Tool::dump($request->post);
+            }
+
+            $html .= $output."</div></fieldset>";
+        }
+
+        if (!empty($this->request->get['_show_session']))
+        {
+            $output = '<fieldset style="margin:5px;"><div style="overflow:auto;text-align:left;">';
+            $this->session->start();
+            $output .= "<h2>SESSION:</h2>" . Tool::dump($request->session);
+            $html .= $output."</div></fieldset>";
+        }
+
         return $html;
     }
 

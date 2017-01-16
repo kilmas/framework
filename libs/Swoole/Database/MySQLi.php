@@ -56,6 +56,10 @@ class MySQLi extends \mysqli implements Swoole\IDatabase
         {
             $db_config['name'] = $db_config['dbname'];
         }
+        elseif (isset($db_config['database']))
+        {
+            $db_config['name'] = $db_config['database'];
+        }
         parent::connect(
             $host,
             $db_config['user'],
@@ -63,9 +67,9 @@ class MySQLi extends \mysqli implements Swoole\IDatabase
             $db_config['name'],
             $db_config['port']
         );
-        if (mysqli_connect_errno())
+        if ($this->connect_errno)
         {
-            trigger_error("Mysqli connect failed: " . mysqli_connect_error());
+            trigger_error("mysqli connect to server[$host:{$db_config['port']}] failed: " . mysqli_connect_error(), E_USER_WARNING);
             return false;
         }
         if (!empty($db_config['charset']))
@@ -92,10 +96,14 @@ class MySQLi extends \mysqli implements Swoole\IDatabase
      */
     protected function errorMessage($sql)
     {
-        $msg = $this->error . "<hr />$sql<hr />";
-        $msg .= "Server: {$this->config['host']}:{$this->config['port']}. <br/>";
-        $msg .= "Message: {$this->error} <br/>";
-        $msg .= "Errno: {$this->errno}";
+        $msg = $this->error . "<hr />$sql<hr />\n";
+        $msg .= "Server: {$this->config['host']}:{$this->config['port']}. <br/>\n";
+        if ($this->connect_errno)
+        {
+            $msg .= "ConnectError[{$this->connect_errno}]: {$this->connect_error}<br/>\n";
+        }
+        $msg .= "Message: {$this->error} <br/>\n";
+        $msg .= "Errno: {$this->errno}\n";
         return $msg;
     }
 
@@ -104,7 +112,7 @@ class MySQLi extends \mysqli implements Swoole\IDatabase
         $result = false;
         for ($i = 0; $i < 2; $i++)
         {
-            $result = call_user_func_array($call, $params);
+            $result = @call_user_func_array($call, $params);
             if ($result === false)
             {
                 if ($this->errno == 2013 or $this->errno == 2006)
@@ -136,10 +144,43 @@ class MySQLi extends \mysqli implements Swoole\IDatabase
         $result = $this->tryReconnect(array('parent', 'query'), array($sql));
         if (!$result)
         {
-            Swoole\Error::info(__CLASS__." SQL Error", $this->errorMessage($sql));
+            trigger_error(__CLASS__." SQL Error:". $this->errorMessage($sql), E_USER_WARNING);
             return false;
         }
+        if (is_bool($result))
+        {
+            return $result;
+        }
         return new MySQLiRecord($result);
+    }
+
+    /**
+     * 执行多个SQL语句
+     * @param string $sql 执行的SQL语句
+     * @return MySQLiRecord | false
+     */
+    function multi_query($sql)
+    {
+        $result = $this->tryReconnect(array('parent', 'multi_query'), array($sql));
+        if (!$result) {
+            Swoole\Error::info(__CLASS__ . " SQL Error", $this->errorMessage($sql));
+            return false;
+        }
+
+        $result = call_user_func_array(array('parent', 'use_result'), array());
+        $output = array();
+        while ($row = $result->fetch_assoc()) {
+            $output[] = $row;
+        }
+        $result->free();
+
+        while (call_user_func_array(array('parent', 'more_results'), array()) && call_user_func_array(array('parent', 'next_result'), array())) {
+            $extraResult = call_user_func_array(array('parent', 'use_result'), array());
+            if ($extraResult instanceof \mysqli_result) {
+                $extraResult->free();
+            }
+        }
+        return $output;
     }
 
     /**

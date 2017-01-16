@@ -2,9 +2,12 @@
 /vendor/
 /examples/webserver.log
 /cache/
-/examples/websocket.log
+/examples/webserver.log
 /logs/
 *.pid
+/uploads
+/composer.lock
+/.settings/
 .buildpath
 .project
-/.settings/
+

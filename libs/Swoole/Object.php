@@ -10,10 +10,10 @@ namespace Swoole;
  * @property Client\CoMySQL      $codb
  * @property IFace\Cache         $cache
  * @property Upload              $upload
- * @property Event               $event
+ * @property Component\Event     $event
  * @property Session             $session
  * @property Template            $tpl
- * @property \redis              $redis
+ * @property \Redis              $redis
  * @property \MongoClient        $mongo
  * @property Config              $config
  * @property Http\PWS            $http
@@ -21,12 +21,15 @@ namespace Swoole;
  * @property Auth                $user
  * @property URL                 $url
  * @property Limit               $limit
+ * @property Request             $request
+ * @property Response            $response
  * @method Database              db
  * @method \MongoClient          mongo
  * @method \redis                redis
  * @method IFace\Cache           cache
  * @method URL                   url
  * @method Client\CoMySQL        codb
+ * @method Platform\Linux os
  */
 class Object
 {

@@ -11,7 +11,11 @@ use Swoole\Server\Driver;
  */
 class Server extends Base implements Driver
 {
-    static $swooleMode = SWOOLE_PROCESS;
+    protected static $beforeStopCallback;
+    protected static $beforeReloadCallback;
+
+    static $swooleMode;
+    static $useSwooleHttpServer = false;
     static $optionKit;
     static $pidFile;
 
@@ -81,7 +85,28 @@ class Server extends Base implements Driver
                 throw new ServerOptionException("不能添加系统保留的选项名称");
             }
         }
+        //解决Windows平台乱码问题
+        if (PHP_OS == 'WINNT')
+        {
+            $description = iconv('utf-8', 'gbk', $description);
+        }
         self::$optionKit->add($specString, $description);
+    }
+
+    /**
+     * @param callable $function
+     */
+    static function beforeStop(callable $function)
+    {
+        self::$beforeStopCallback = $function;
+    }
+
+    /**
+     * @param callable $function
+     */
+    static function beforeReload(callable $function)
+    {
+        self::$beforeReloadCallback = $function;
     }
 
     /**
@@ -112,6 +137,11 @@ class Server extends Base implements Driver
         $kit = self::$optionKit;
         foreach(self::$defaultOptions as $k => $v)
         {
+            //解决Windows平台乱码问题
+            if (PHP_OS == 'WINNT')
+            {
+                $v = iconv('utf-8', 'gbk', $v);
+            }
             $kit->add($k, $v);
         }
         global $argv;
@@ -126,7 +156,11 @@ class Server extends Base implements Driver
             {
                 exit("Server is not running");
             }
-            posix_kill($server_pid, SIGUSR1);
+            if (self::$beforeReloadCallback)
+            {
+                call_user_func(self::$beforeReloadCallback, $opt);
+            }
+            \Swoole::$php->os->kill($server_pid, SIGUSR1);
             exit;
         }
         elseif ($argv[1] == 'stop')
@@ -135,13 +169,17 @@ class Server extends Base implements Driver
             {
                 exit("Server is not running\n");
             }
-            posix_kill($server_pid, SIGTERM);
+            if (self::$beforeStopCallback)
+            {
+                call_user_func(self::$beforeStopCallback, $opt);
+            }
+            \Swoole::$php->os->kill($server_pid, SIGTERM);
             exit;
         }
         elseif ($argv[1] == 'start')
         {
             //已存在ServerPID，并且进程存在
-            if (!empty($server_pid) and posix_kill($server_pid, 0))
+            if (!empty($server_pid) and \Swoole::$php->os->kill($server_pid, 0))
             {
                 exit("Server is already running.\n");
             }
@@ -187,7 +225,20 @@ class Server extends Base implements Driver
         {
             self::$swooleMode = SWOOLE_BASE;
         }
-        $this->sw = new \swoole_server($host, $port, self::$swooleMode, $flag);
+        elseif (extension_loaded('swoole'))
+        {
+            self::$swooleMode = SWOOLE_PROCESS;
+        }
+
+        if (self::$useSwooleHttpServer)
+        {
+            $this->sw = new \swoole_http_server($host, $port, self::$swooleMode, $flag);
+        }
+        else
+        {
+            $this->sw = new \swoole_server($host, $port, self::$swooleMode, $flag);
+        }
+
         $this->host = $host;
         $this->port = $port;
         Swoole\Error::$stop = false;
@@ -219,14 +270,21 @@ class Server extends Base implements Driver
         {
             file_put_contents(self::$pidFile, $serv->master_pid);
         }
+        if (method_exists($this->protocol, 'onMasterStart'))
+        {
+            $this->protocol->onMasterStart($serv);
+        }
     }
-
 
     function onMasterStop($serv)
     {
         if (!empty($this->runtimeSetting['pid_file']))
         {
             unlink(self::$pidFile);
+        }
+        if (method_exists($this->protocol, 'onMasterStop'))
+        {
+            $this->protocol->onMasterStop($serv);
         }
     }
 
@@ -288,18 +346,41 @@ class Server extends Base implements Driver
                 Swoole\Console::setProcessName($this->getProcessName() . ': manager');
             });
         }
+
         $this->sw->on('Start', array($this, 'onMasterStart'));
         $this->sw->on('Shutdown', array($this, 'onMasterStop'));
         $this->sw->on('ManagerStop', array($this, 'onManagerStop'));
         $this->sw->on('WorkerStart', array($this, 'onWorkerStart'));
-        $this->sw->on('Connect', array($this->protocol, 'onConnect'));
-        $this->sw->on('Receive', array($this->protocol, 'onReceive'));
-        $this->sw->on('Close', array($this->protocol, 'onClose'));
-        $this->sw->on('WorkerStop', array($this->protocol, 'onShutdown'));
-        if (is_callable(array($this->protocol, 'onTimer')))
+
+        if (is_callable(array($this->protocol, 'onConnect')))
         {
-            $this->sw->on('Timer', array($this->protocol, 'onTimer'));
+            $this->sw->on('Connect', array($this->protocol, 'onConnect'));
         }
+        if (is_callable(array($this->protocol, 'onClose')))
+        {
+            $this->sw->on('Close', array($this->protocol, 'onClose'));
+        }
+        if (self::$useSwooleHttpServer)
+        {
+            $this->sw->on('Request', array($this->protocol, 'onRequest'));
+        }
+        else
+        {
+            $this->sw->on('Receive', array($this->protocol, 'onReceive'));
+        }
+        if (is_callable(array($this->protocol, 'WorkerStop')))
+        {
+            $this->sw->on('WorkerStop', array($this->protocol, 'WorkerStop'));
+        }
+        //swoole-1.8已经移除了onTimer回调函数
+        if ($version[1] < 8)
+        {
+            if (is_callable(array($this->protocol, 'onTimer')))
+            {
+                $this->sw->on('Timer', array($this->protocol, 'onTimer'));
+            }
+        }
+
         if (is_callable(array($this->protocol, 'onTask')))
         {
             $this->sw->on('Task', array($this->protocol, 'onTask'));
@@ -316,6 +397,22 @@ class Server extends Base implements Driver
     function close($client_id)
     {
         return $this->sw->close($client_id);
+    }
+
+    /**
+     * @param $protocol
+     * @throws \Exception
+     */
+    function setProtocol($protocol)
+    {
+        if (self::$useSwooleHttpServer)
+        {
+            $this->protocol = $protocol;
+        }
+        else
+        {
+            parent::setProtocol($protocol);
+        }
     }
 
     function send($client_id, $data)

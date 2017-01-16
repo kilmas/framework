@@ -12,9 +12,40 @@ class Tool
     static public $url_param_join = '&';
     static public $url_prefix = '';
     static public $url_add_end = '';
+
     const DATE_FORMAT_HTTP   = 'D, d-M-Y H:i:s T';
+    const WEEK_TWO = '周';
+    const WEEK_THREE = '星期';
+
+    const DATE_FORMAT_HUMEN = 'Y-m-d H:i:s';
 
     static $number = array('〇','一','二','三','四','五','六','七','八','九');
+
+    /**
+     * 数字转星期
+     * @param $num
+     * @param bool $two
+     * @return string
+     */
+    static function num2week($num, $two = true)
+    {
+        if ($num == '6')
+        {
+            $num = '日';
+        }
+        else
+        {
+            $num = Tool::num2han($num + 1);
+        }
+        if ($two)
+        {
+            return self::WEEK_TWO . $num;
+        }
+        else
+        {
+            return self::WEEK_THREE . $num;
+        }
+    }
 
     /**
      * 数字转为汉字
@@ -30,7 +61,15 @@ class Tool
     {
         if (function_exists('scandir'))
         {
-            return scandir($dir);
+            $files = scandir($dir);
+            foreach ($files as $key => $value)
+            {
+                if ($value == '.' or $value == '..')
+                {
+                    unset($files[$key]);
+                }
+            }
+            return array_values($files);
         }
         else
         {
@@ -43,10 +82,9 @@ class Tool
                 }
                 $files[] = $filename;
             }
-
             sort($files);
+            return $files;
         }
-        $dirs = scandir($dir);
     }
 
     /**
@@ -57,6 +95,33 @@ class Tool
     static function export($var)
     {
         return "<?php\nreturn ".var_export($var, true).";";
+    }
+
+    /**
+     * 加锁读取文件
+     * @param $file
+     * @param bool $exclusive
+     * @return bool|string
+     */
+    static function readFile($file, $exclusive = false)
+    {
+        $fp = fopen($file, 'r');
+        if (!$fp)
+        {
+            return false;
+        }
+        $lockType = $exclusive ? LOCK_EX : LOCK_SH;
+        if (flock($fp, $lockType) === false)
+        {
+            fclose($fp);
+        }
+        $content = '';
+        while(!feof($fp))
+        {
+            $content .= fread($fp, 8192);
+        }
+        flock($fp, LOCK_UN);
+        return $content;
     }
 
     /**
@@ -94,14 +159,15 @@ class Tool
         $responseTime = $requestTime = $_SERVER['REQUEST_TIME'];
         $result = true;
 
-       if (isset($_SERVER['HTTP_IF_MODIFIED_SINCE']))
+        if (isset($_SERVER['HTTP_IF_MODIFIED_SINCE']))
         {
             $lastModifiedSince = strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE']);
-            if ($lastModifiedSince and $requestTime <= ($lastModifiedSince + $expire))
+            //命中本地缓存
+            if ($lastModifiedSince > $lastModifyTime)
             {
-                \Swoole::$php->http->status(404);
+                \Swoole::$php->http->status(304);
+                $result = false;
             }
-            $result = false;
         }
 
         $headers = array(
@@ -252,7 +318,7 @@ class Tool
         {
             $prefix = self::$url_prefix;
         }
-        return $prefix . self::combine_query($urls) . self::$url_add_end;
+        return $prefix . http_build_query($urls) . self::$url_add_end;
     }
 
     /**
@@ -484,5 +550,97 @@ class Tool
         $t = round((microtime(true) - $_t) * 1000, 3);
         $m = memory_get_usage(true) - $_m;
         echo "cost Time: {$t}ms, Memory=".self::getHumanSize($m)."\n";
+    }
+
+    /**
+     * 从Server列表中随机选出一个，使用status配置可以实现上线下线管理，weight(0-100)配置权重
+     * @param array $servers
+     * @return mixed
+     */
+    static function getServer(array $servers)
+    {
+        $weight = 0;
+        //移除不在线的节点
+        foreach ($servers as $k => $svr)
+        {
+            //节点已掉线
+            if (!empty($svr['status']) and $svr['status'] == 'offline')
+            {
+                unset($servers[$k]);
+            }
+            else
+            {
+                $weight += $svr['weight'];
+            }
+        }
+        //计算权重并随机选择一台机器
+        $use = rand(0, $weight - 1);
+        $weight = 0;
+        foreach ($servers as $k => $svr)
+        {
+            //默认100权重
+            if (empty($svr['weight']))
+            {
+                $svr['weight'] = 100;
+            }
+            $weight += $svr['weight'];
+            //在权重范围内
+            if ($use < $weight)
+            {
+                return $svr;
+            }
+        }
+        //绝不会到这里
+        return $servers[0];
+    }
+
+    /**
+     * 打印数组
+     * @param $var
+     * @return mixed
+     */
+    static function dump($var)
+    {
+        return highlight_string("<?php\n\$array = ".var_export($var, true).";", true);
+    }
+
+    /**
+     * @param array $arr
+     */
+    static function arrayUnique(array &$arr)
+    {
+        $map = array();
+        foreach ($arr as $k => $v)
+        {
+            if (is_object($v))
+            {
+                $hash = spl_object_hash($v);
+            }
+            elseif (is_resource($v))
+            {
+                $hash = intval($v);
+            }
+            else
+            {
+                $hash = $v;
+            }
+            if (isset($map[$hash]))
+            {
+                unset($arr[$k]);
+            }
+            else
+            {
+                $map[$hash] = true;
+            }
+        }
+    }
+
+    /**
+     * 获取现在的时间字符串，格式为 2016-12-12 00:00:01
+     * @return bool|string
+     */
+    function now()
+    {
+        return date(self::DATE_FORMAT_HUMEN);
     }
 }

@@ -59,10 +59,12 @@ class Database
      */
     public $db_apt = null;
 
+    protected $lastSql = '';
+
 	const TYPE_MYSQL   = 1;
 	const TYPE_MYSQLi  = 2;
 	const TYPE_PDO     = 3;
-	const TYPE_AdoDB   = 4;
+    const TYPE_CLMysql = 4;
 
     function __construct($db_config)
     {
@@ -73,6 +75,9 @@ class Database
                 break;
             case self::TYPE_MYSQLi:
                 $this->_db = new Database\MySQLi($db_config);
+                break;
+            case self::TYPE_CLMysql:
+                $this->_db = new Database\CLMySQL($db_config);
                 break;
             default:
                 $this->_db = new Database\PdoDB($db_config);
@@ -92,25 +97,30 @@ class Database
         $this->write_times = 0;
     }
 
-	/**
-	 * 检查连接状态，如果连接断开，则重新连接
-	 */
-	function check_status()
-	{
-		if(!$this->_db->ping())
-		{
-			$this->_db->close();
-			$this->_db->connect();
-		}
-	}
-	/**
-	 * 启动事务处理
-	 * @return bool
-	 */
-	function start()
-	{
-		return $this->query('START TRANSACTION');
-	}
+    /**
+     * 检查连接状态，如果连接断开，则重新连接
+     */
+    function check_status()
+    {
+        if (!$this->_db->ping())
+        {
+            $this->_db->close();
+            $this->_db->connect();
+        }
+    }
+
+    /**
+     * 启动事务处理
+     * @return bool
+     */
+    function start()
+    {
+        if ($this->query('set autocommit = 0') === false)
+        {
+            return false;
+        }
+        return $this->query('START TRANSACTION');
+    }
 
 	/**
 	 * 提交事务处理
@@ -118,7 +128,12 @@ class Database
 	 */
 	function commit()
 	{
-		return $this->query('COMMIT');
+        if ($this->query('COMMIT') === false)
+        {
+            return false;
+        }
+        $this->query('set autocommit = 1');
+        return true;
 	}
 
 	/**
@@ -127,14 +142,19 @@ class Database
 	 */
 	function rollback()
 	{
-		$this->query('ROLLBACK');
+        if ($this->query('ROLLBACK') === false)
+        {
+            return false;
+        }
+        $this->query('set autocommit = 1');
+		return true;
 	}
 
-	/**
-	 * 执行一条SQL语句
-	 * @param $sql
+    /**
+     * 执行一条SQL语句
+     * @param $sql
      * @return \Swoole\Database\MySQLiRecord
-	 */
+     */
     public function query($sql)
     {
         if ($this->debug)
@@ -142,8 +162,10 @@ class Database
             echo "$sql<br />\n<hr />";
         }
         $this->read_times += 1;
+        $this->lastSql = $sql;
         return $this->_db->query($sql);
     }
+
 	/**
 	 * 插入$data数据库的表$table，$data必须是键值对应的，$key是数据库的字段，$value是对应的值
 	 * @param $data
@@ -212,6 +234,15 @@ class Database
         $this->db_apt->from($table);
         $this->db_apt->where("$primary='$id'");
         return $this->db_apt->getone();
+    }
+
+    /**
+     * 获取最近一次执行的SQL语句
+     * @return string
+     */
+    function getSql()
+    {
+        return $this->lastSql;
     }
 
     /**

@@ -19,19 +19,32 @@ class ExtServer implements Swoole\IFace\Http
      */
     public $response;
 
-    public $finish;
     public $document_root;
+    public $charest = 'utf-8';
+    public $expire_time = 86400;
+    const DATE_FORMAT_HTTP = 'D, d-M-Y H:i:s T';
 
     protected $mimes;
     protected $types;
+    protected $config;
 
     static $gzip_extname = array('js' => true, 'css' => true, 'html' => true, 'txt' => true);
 
-    function __construct()
+    function __construct($config)
     {
         $mimes = require LIBPATH . '/data/mimes.php';
         $this->mimes = $mimes;
         $this->types = array_flip($mimes);
+
+        if (!empty($config['document_root']))
+        {
+            $this->document_root = trim($config['document_root']);
+        }
+        if (!empty($config['charset']))
+        {
+            $this->charset = trim($config['charset']);
+        }
+        $this->config = $config;
     }
 
     function header($k, $v)
@@ -56,11 +69,9 @@ class ExtServer implements Swoole\IFace\Http
         $this->response->header('Location', $url);
     }
 
-    function finish($content = null)
+    function finish($content = '')
     {
-        $this->finish = true;
-        $this->response->write($content);
-        throw new Swoole\ResponseException;
+        throw new Swoole\Exception\Response($content);
     }
 
     function getRequestBody()
@@ -73,82 +84,84 @@ class ExtServer implements Swoole\IFace\Http
         $this->response->cookie($name, $value, $expire, $path, $domain, $secure, $httponly);
     }
 
-    function setGlobal()
+    /**
+     * 将swoole扩展产生的请求对象数据赋值给框架的Request对象
+     * @param Swoole\Request $request
+     */
+    function assign(Swoole\Request $request)
     {
         if (isset($this->request->get))
         {
-            $_GET = $this->request->get;
-        }
-        else
-        {
-            $_GET = array();
+            $request->get = $this->request->get;
         }
         if (isset($this->request->post))
         {
-            $_POST = $this->request->post;
-        }
-        else
-        {
-            $_POST = array();
+            $request->post = $this->request->post;
         }
         if (isset($this->request->files))
         {
-            $_FILES = $this->request->files;
-        }
-        else
-        {
-            $_FILES = array();
+            $request->files = $this->request->files;
         }
         if (isset($this->request->cookie))
         {
-            $_COOKIE = $this->request->cookie;
-        }
-        else
-        {
-            $_COOKIE = array();
+            $request->cookie = $this->request->cookie;
         }
         if (isset($this->request->server))
         {
             foreach($this->request->server as $key => $value)
             {
-                $_SERVER[strtoupper($key)] = $value;
+                $request->server[strtoupper($key)] = $value;
             }
+            $request->remote_ip = $this->request->server['remote_addr'];
         }
-        else
-        {
-            $_SERVER = array();
-        }
-        $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);
-        $_SERVER['REQUEST_URI'] = $this->request->server['request_uri'];
-        /**
-         * 将HTTP头信息赋值给$_SERVER超全局变量
-         */
-        foreach($this->request->header as $key => $value)
-        {
-            $_key = 'HTTP_'.strtoupper(str_replace('-', '_', $key));
-            $_SERVER[$_key] = $value;
-        }
-        $_SERVER['REMOTE_ADDR'] = $this->request->server['remote_addr'];
+        $request->header = $this->request->header;
+        $request->setGlobal();
     }
 
     function doStatic(\swoole_http_request $req, \swoole_http_response $resp)
     {
         $file = $this->document_root . $req->server['request_uri'];
-        $extname = Swoole\Upload::getFileExt($file);
-        if (empty($this->types[$extname]))
+        $read_file = true;
+        $fstat = stat($file);
+
+        //过期控制信息
+        if (isset($req->header['if-modified-since']))
         {
-            $mime_type = 'text/html';
+            $lastModifiedSince = strtotime($req->header['if-modified-since']);
+            if ($lastModifiedSince and $fstat['mtime'] <= $lastModifiedSince)
+            {
+                //不需要读文件了
+                $read_file = false;
+                $resp->status(304);
+            }
         }
         else
         {
-            $mime_type = $this->types[$extname];
+            $resp->header('Cache-Control', "max-age={$this->expire_time}");
+            $resp->header('Pragma', "max-age={$this->expire_time}");
+            $resp->header('Last-Modified', date(self::DATE_FORMAT_HTTP, $fstat['mtime']));
+            $resp->header('Expires',  "max-age={$this->expire_time}");
         }
-        if (isset(self::$gzip_extname[$extname]))
+
+        if ($read_file)
         {
-            $resp->gzip();
+            $extname = Swoole\Upload::getFileExt($file);
+            if (empty($this->types[$extname]))
+            {
+                $mime_type = 'text/html; charset='.$this->charest;
+            }
+            else
+            {
+                $mime_type = $this->types[$extname];
+            }
+            $resp->header('Content-Type', $mime_type);
+            $resp->sendfile($file);
         }
-        $resp->header('Content-Type', $mime_type);
-        $resp->end(file_get_contents($this->document_root . $req->server['request_uri']));
+        else
+        {
+            $resp->end();
+        }
+        return true;
     }
 
     function onRequest(\swoole_http_request $req, \swoole_http_response $resp)
@@ -161,9 +174,11 @@ class ExtServer implements Swoole\IFace\Http
 
         $this->request = $req;
         $this->response = $resp;
-        $this->setGlobal();
 
         $php = Swoole::getInstance();
+        $php->request = new Swoole\Request();
+        $php->response = new Swoole\Response();
+        $this->assign($php->request);
         try
         {
             try
@@ -175,13 +190,9 @@ class ExtServer implements Swoole\IFace\Http
                 ob_end_clean();
                 $resp->end($echo_output.$body);
             }
-            catch (Swoole\ResponseException $e)
+            catch (Swoole\Exception\Response $e)
             {
-                if ($this->finish != 1)
-                {
-                    $resp->status(500);
-                    $resp->end($e->getMessage());
-                }
+                $resp->end($e->getMessage());
             }
         }
         catch (\Exception $e)

@@ -7,7 +7,7 @@ use Swoole;
  * Class Http_LAMP
  * @package Swoole
  */
-class PWS implements \Swoole\IFace\Http
+class PWS implements Swoole\IFace\Http
 {
     function header($k, $v)
     {
@@ -34,8 +34,11 @@ class PWS implements \Swoole\IFace\Http
     function finish($content = null)
     {
         \Swoole::$php->request->finish = 1;
-        if($content) \Swoole::$php->response->body = $content;
-        throw new Swoole\ResponseException;
+        if ($content)
+        {
+            \Swoole::$php->response->body = $content;
+        }
+        throw new Swoole\Exception\Response;
     }
 
     function setcookie($name, $value = null, $expire = null, $path = '/', $domain = null, $secure = null, $httponly = null)

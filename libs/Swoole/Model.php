@@ -1,6 +1,8 @@
 <?php
 namespace Swoole;
 
+use Swoole\Component\Observer;
+
 /**
  * Model类，ORM基础类，提供对某个数据库表的接口
  * @author Tianfeng Han
@@ -32,9 +34,9 @@ class Model
 	 *
 	 * @var int
 	 */
-	public $tablesize = 1000000;
-	public $fields;
-	public $select='*';
+    public $tablesize = 1000000;
+    public $fields;
+    public $select = '*';
 
 	public $create_sql='';
 
@@ -75,7 +77,7 @@ class Model
 	 * @param $where
 	 * @return Record Object
 	 */
-	public final function get($object_id = 0, $where = '')
+	public function get($object_id = 0, $where = '')
 	{
 		return new Record($object_id, $this->db, $this->table, $this->primary, $where, $this->select);
 	}
@@ -87,7 +89,7 @@ class Model
      * @throws \Exception
 	 * @return array
 	 */
-	public final function gets($params, &$pager=null)
+	public function gets($params, &$pager=null)
 	{
 		if (empty($params))
 		{
@@ -119,7 +121,7 @@ class Model
 	 * @param $data Array 必须是键值（表的字段对应值）对应
 	 * @return int
 	 */
-    public final function put($data)
+    public function put($data)
     {
         if (empty($data) or !is_array($data))
         {
@@ -127,7 +129,15 @@ class Model
         }
         if ($this->db->insert($data, $this->table))
         {
-            return $this->db->lastInsertId();
+            $lastInsertId = $this->db->lastInsertId();
+            if ($lastInsertId == 0)
+            {
+                return true;
+            }
+            else
+            {
+                return $lastInsertId;
+            }
         }
         else
         {
@@ -142,7 +152,7 @@ class Model
 	 * @param $where string 指定匹配字段，默认为主键
 	 * @return bool
 	 */
-    public final function set($id, $data, $where = '')
+    public function set($id, $data, $where = '')
     {
         if (empty($where))
         {
@@ -158,40 +168,44 @@ class Model
 	 * @return bool
 	 * @throws \Exception
 	 */
-	public final function sets($data, $params)
-	{
-		if (empty($params))
-		{
-			throw new \Exception("Model sets params is empty!");
-		}
-		$selectdb = new SelectDB($this->db);
-		$selectdb->from($this->table);
-		$selectdb->put($params);
-		return $selectdb->update($data);
+	public function sets($data, $params)
+    {
+        if (empty($params))
+        {
+            throw new \Exception("Model sets params is empty!");
+        }
+        $selectdb = new SelectDB($this->db);
+        $selectdb->from($this->table);
+        $selectdb->put($params);
+        return $selectdb->update($data);
 	}
 
 	/**
 	 * 删除一条数据主键为$id的记录，
 	 * @param $id
-	 * @param $where 指定匹配字段，默认为主键
+	 * @param $where string 指定匹配字段，默认为主键
 	 * @return true/false
 	 */
-	public final function del($id, $where=null)
+	public function del($id, $where=null)
 	{
-		if($where==null) $where = $this->primary;
-		return $this->db->delete($id,$this->table,$where);
+        if ($where == null)
+        {
+            $where = $this->primary;
+        }
+        return $this->db->delete($id, $this->table, $where);
 	}
+
     /**
      * 删除一条数据包含多个参数
-     * @param array $params
-     * @return true/false
+     * @param $params
+     * @return bool
+     * @throws \Exception
      */
-    public final function dels($params)
+    public function dels($params)
     {
-        if(empty($params))
+        if (empty($params))
         {
             throw new \Exception("Model dels params is empty!");
-            return false;
         }
     	$selectdb = new SelectDB($this->db);
         $selectdb->from($this->table);
@@ -199,23 +213,25 @@ class Model
         $selectdb->delete();
         return true;
     }
+
     /**
      * 返回符合条件的记录数
      * @param array $params
      * @return true/false
      */
-    public final function count($params)
+    public function count($params)
     {
     	$selectdb = new SelectDB($this->db);
 		$selectdb->from($this->table);
 		$selectdb->put($params);
 		return $selectdb->count();
     }
+
 	/**
 	 * 获取到所有表记录的接口，通过这个接口可以访问到数据库的记录
 	 * @return RecordSet Object (这是一个接口，不包含实际的数据)
 	 */
-	public final function all()
+	public function all()
 	{
 		return new RecordSet($this->db, $this->table, $this->primary, $this->select);
 	}
@@ -347,9 +363,15 @@ class Model
 	 */
 	function exists($gets)
 	{
-	    $c = $this->count($gets);
-	    if($c>0) return true;
-	    else return false;
+        $c = $this->count($gets);
+        if ($c > 0)
+        {
+            return true;
+        }
+        else
+        {
+            return false;
+        }
 	}
 
 	/**
@@ -360,7 +382,6 @@ class Model
 	{
 		return $this->db->query('describe '.$this->table)->fetchall();
 	}
-
 	/**
 	 * 自动生成表单
 	 *
@@ -435,9 +456,10 @@ class Model
  * @package SwooleSystem
  * @subpackage Model
  */
-class Record implements \ArrayAccess
+class Record extends Observer implements \ArrayAccess
 {
     protected $_data = array();
+    protected $_original_data = null;
     protected $_update = array();
     protected $_change = 0;
     protected $_save = false;
@@ -450,9 +472,9 @@ class Record implements \ArrayAccess
     public $primary = "id";
     public $table = "";
 
-
     public $_current_id = 0;
     public $_currend_key;
+    public $_delete = false;
 
     const STATE_EMPTY  = 0;
     const STATE_INSERT = 1;
@@ -482,15 +504,20 @@ class Record implements \ArrayAccess
 
         if (!empty($this->_current_id))
         {
-			$res = $this->db->query("select {$select} from {$this->table} where {$where} ='{$id}' limit 1")->fetch();
-			if (!empty($res))
+			$obj = $this->db->query("select {$select} from {$this->table} where {$where} ='{$id}' limit 1");
+			if (!is_bool($obj))
 			{
-				$this->_data = $res;
-				$this->_current_id = $this->_data[$this->primary];
-				$this->_change = self::STATE_INSERT;
+				$res = $obj->fetch();
+				if (!empty($res))
+				{
+                    $this->_original_data = $this->_data = $res;
+                    $this->_current_id = $this->_data[$this->primary];
+                    $this->_change = self::STATE_INSERT;
+				}
 			}
         }
 	}
+
 
 	/**
 	 * 是否存在
@@ -504,7 +531,7 @@ class Record implements \ArrayAccess
 	/**
 	 * 将关联数组压入object中，赋值给各个字段
 	 * @param $data
-	 * @return unknown_type
+	 * @return void
 	 */
 	function put($data)
 	{
@@ -522,12 +549,21 @@ class Record implements \ArrayAccess
 
 	/**
 	 * 获取数据数组
-	 * @return mixed
+	 * @return array
 	 */
 	function get()
 	{
 		return $this->_data;
 	}
+
+    /**
+     * 获取原始数据
+     * @return null | array
+     */
+    function getOriginalData()
+    {
+        return $this->_original_data;
+    }
 
 	/**
 	 * 获取属性
@@ -567,14 +603,14 @@ class Record implements \ArrayAccess
 	 * 保存对象数据到数据库
 	 * 如果是空白的记录，保存则会Insert到数据库
 	 * 如果是已存在的记录，保持则会update，修改过的值，如果没有任何值被修改，则不执行SQL
-	 * @return unknown_type
+	 * @return bool
 	 */
 	function save()
-	{
+    {
+        $this->_save = false;
         if ($this->_change == 0 or $this->_change == 1)
         {
-            $ret = $this->db->insert($this->_data, $this->table);
-            if ($ret === false)
+            if ($this->db->insert($this->_data, $this->table) === false)
             {
                 return false;
             }
@@ -586,17 +622,26 @@ class Record implements \ArrayAccess
         {
             $update = $this->_update;
             unset($update[$this->primary]);
-            return $this->db->update($this->_current_id, $update, $this->table, $this->primary);
+            if ($this->db->update($this->_current_id, $update, $this->table, $this->primary) === false)
+            {
+                return false;
+            }
         }
+        $this->notify();
         return true;
 	}
 
-	function update()
-	{
+    function update()
+    {
         $update = $this->_data;
         unset($update[$this->primary]);
-        return $this->db->update($this->_current_id, $this->_update, $this->table, $this->primary);
-	}
+        if ($this->db->update($this->_current_id, $this->_update, $this->table, $this->primary) === false)
+        {
+            return false;
+        }
+        $this->notify();
+        return true;
+    }
 
     function __destruct()
     {
@@ -606,14 +651,20 @@ class Record implements \ArrayAccess
         }
     }
 
-	/**
-	 * 删除数据库中的此条记录
-	 * @return unknown_type
-	 */
-	function delete()
-	{
-		$this->db->delete($this->_current_id,$this->table,$this->primary);
-	}
+    /**
+     * 删除数据库中的此条记录
+     * @return bool
+     */
+    function delete()
+    {
+        if ($this->db->delete($this->_current_id, $this->table, $this->primary) === false)
+        {
+            return false;
+        }
+        $this->_delete = true;
+        $this->notify();
+        return true;
+    }
 
 	function offsetExists($key)
 	{

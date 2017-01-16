@@ -38,8 +38,7 @@ class Session
 
     /**
      * 构造函数
-     * @param $cache \Swoole\Cache
-     * @return NULL
+     * @param $cache IFace\Cache
      */
     public function __construct($cache = null)
     {
@@ -48,6 +47,10 @@ class Session
 
     public function start($readonly = false)
     {
+        if (empty(\Swoole::$php->request))
+        {
+            throw new SessionException("The method must be used when requested.");
+        }
         $this->isStart = true;
         if ($this->use_php_session)
         {
@@ -65,6 +68,7 @@ class Session
             }
             $_SESSION = $this->load($sessid);
         }
+        \Swoole::$php->request->session = $_SESSION;
     }
 
     function setId($session_id)
@@ -208,4 +212,9 @@ class Session
         session_start();
         return true;
     }
+}
+
+class SessionException extends \Exception
+{
+
 }

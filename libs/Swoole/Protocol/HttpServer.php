@@ -84,6 +84,11 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
         unset($this->requests[$fd], $this->buffer_header[$fd]);
     }
 
+    /**
+     * @param $client_id
+     * @param $http_data
+     * @return bool|Swoole\Request
+     */
     function checkHeader($client_id, $http_data)
     {
         //新的连接
@@ -106,14 +111,14 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
                 $request = new Swoole\Request;
                 //GET没有body
                 list($header, $request->body) = explode(self::HTTP_EOF, $http_data, 2);
-                $request->head = $this->parser->parseHeader($header);
+                $request->header = $this->parser->parseHeader($header);
                 //使用head[0]保存额外的信息
-                $request->meta = $request->head[0];
-                unset($request->head[0]);
+                $request->meta = $request->header[0];
+                unset($request->header[0]);
                 //保存请求
                 $this->requests[$client_id] = $request;
                 //解析失败
-                if ($request->head == false)
+                if ($request->header == false)
                 {
                     $this->log("parseHeader failed. header=".$header);
                     return false;
@@ -129,18 +134,22 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
         return $request;
     }
 
-    function checkPost($request)
+    /**
+     * @param Swoole\Request $request
+     * @return int
+     */
+    function checkPost(Swoole\Request $request)
     {
-        if (isset($request->head['Content-Length']))
+        if (isset($request->header['Content-Length']))
         {
             //超过最大尺寸
-            if (intval($request->head['Content-Length']) > $this->config['server']['post_maxsize'])
+            if (intval($request->header['Content-Length']) > $this->config['server']['post_maxsize'])
             {
                 $this->log("checkPost failed. post_data is too long.");
                 return self::ST_ERROR;
             }
             //不完整，继续等待数据
-            if (intval($request->head['Content-Length']) > strlen($request->body))
+            if (intval($request->header['Content-Length']) > strlen($request->body))
             {
                 return self::ST_WAIT;
             }
@@ -222,14 +231,32 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
          * @var $request Swoole\Request
          */
         $request = $this->requests[$client_id];
+
+        $request->fd = $client_id;
+
+        /**
+         * Socket连接信息
+         */
 	    $info = $serv->connection_info($client_id);
+        $request->server['SWOOLE_CONNECTION_INFO'] = $info;
         $request->remote_ip = $info['remote_ip'];
         $request->remote_port = $info['remote_port'];
-	    $_SERVER['SWOOLE_CONNECTION_INFO'] = $info;
+        /**
+         * Server变量
+         */
+        $request->server['REQUEST_URI'] = $request->meta['uri'];
+        $request->server['REMOTE_ADDR'] = $request->remote_ip;
+        $request->server['REMOTE_PORT'] = $request->remote_port;
+        $request->server['REQUEST_METHOD'] = $request->meta['method'];
+        $request->server['REQUEST_TIME'] = $request->time;
+        $request->server['SERVER_PROTOCOL'] = $request->meta['protocol'];
+        if (!empty($request->meta['query']))
+        {
+            $_SERVER['QUERY_STRING'] = $request->meta['query'];
+        }
+        $request->setGlobal();
         $this->parseRequest($request);
-        $request->fd = $client_id;
         $this->currentRequest = $request;
-
         //处理请求，产生response对象
         $response = $this->onRequest($request);
         if ($response and $response instanceof Swoole\Response)
@@ -273,7 +300,7 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
             $this->parser->parseBody($request);
         }
         //解析Cookies
-        if (!empty($request->head['Cookie']))
+        if (!empty($request->header['Cookie']))
         {
             $this->parser->parseCookie($request);
         }
@@ -294,7 +321,7 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
         if (!isset($response->head['Connection']))
         {
             //keepalive
-            if ($this->keepalive and (isset($request->head['Connection']) and strtolower($request->head['Connection']) == 'keep-alive'))
+            if ($this->keepalive and (isset($request->header['Connection']) and strtolower($request->header['Connection']) == 'keep-alive'))
             {
                 $response->head['KeepAlive'] = 'on';
                 $response->head['Connection'] = 'keep-alive';
@@ -314,9 +341,27 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
         //压缩
         if ($this->gzip)
         {
-            $response->head['Content-Encoding'] = 'deflate';
-            $response->body = gzdeflate($response->body, $this->config['server']['gzip_level']);
+            if (!empty($request->header['Accept-Encoding']))
+            {
+                //gzip
+                if (strpos($request->header['Accept-Encoding'], 'gzip') !== false)
+                {
+                    $response->head['Content-Encoding'] = 'gzip';
+                    $response->body = gzencode($response->body, $this->config['server']['gzip_level']);
+                }
+                //deflate
+                elseif (strpos($request->header['Accept-Encoding'], 'deflate') !== false)
+                {
+                    $response->head['Content-Encoding'] = 'deflate';
+                    $response->body = gzdeflate($response->body, $this->config['server']['gzip_level']);
+                }
+                else
+                {
+                    $this->log("Unsupported compression type : {$request->header['Accept-Encoding']}.");
+                }
+            }
         }
+
         $out = $response->getHeader().$response->body;
         $ret = $this->server->send($request->fd, $out);
         $this->afterResponse($request, $response);
@@ -333,7 +378,9 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
     {
         $response->setHttpStatus($code);
         $response->head['Content-Type'] = 'text/html';
-        $response->body = Swoole\Error::info(Swoole\Response::$HTTP_HEADERS[$code], "<p>$content</p><hr><address>" . self::SOFTWARE . " at {$this->server->host} Port {$this->server->port}</address>");
+        $response->body = Swoole\Error::info(Swoole\Response::$HTTP_HEADERS[$code],
+            "<p>$content</p><hr><address>" . self::SOFTWARE . " at {$this->server->host}" .
+            " Port {$this->server->port}</address>");
     }
 
     /**
@@ -424,8 +471,11 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
 
     /**
      * 过滤请求，阻止静止访问的目录，处理静态文件
+     * @param Swoole\Request $request
+     * @param Swoole\Response $response
+     * @return bool
      */
-    function doStaticRequest($request, $response)
+    function doStaticRequest(Swoole\Request $request, Swoole\Response $response)
     {
         $path = explode('/', trim($request->meta['path'], '/'));
         //扩展名
@@ -445,12 +495,12 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
     }
 
     /**
-     * 静态请求
-     * @param $request
-     * @param $response
-     * @return unknown_type
+     * 处理静态请求
+     * @param Swoole\Request $request
+     * @param Swoole\Response $response
+     * @return bool
      */
-    function processStatic($request, Swoole\Response $response)
+    function processStatic(Swoole\Request $request, Swoole\Response $response)
     {
         $path = $this->document_root . '/' . $request->meta['path'];
         if (is_file($path))
@@ -461,9 +511,9 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
                 $expire = intval($this->config['server']['expire_time']);
                 $fstat = stat($path);
                 //过期控制信息
-                if (isset($request->head['If-Modified-Since']))
+                if (isset($request->header['If-Modified-Since']))
                 {
-                    $lastModifiedSince = strtotime($request->head['If-Modified-Since']);
+                    $lastModifiedSince = strtotime($request->header['If-Modified-Since']);
                     if ($lastModifiedSince and $fstat['mtime'] <= $lastModifiedSince)
                     {
                         //不需要读文件了
@@ -494,19 +544,16 @@ class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Prot
     }
 
     /**
-     * 动态请求
-     * @param $request
-     * @param $response
-     * @return unknown_type
+     * 处理动态请求
+     * @param Swoole\Request $request
+     * @param Swoole\Response $response
      */
     function processDynamic(Swoole\Request $request, Swoole\Response $response)
     {
         $path = $this->document_root . '/' . $request->meta['path'];
         if (is_file($path))
         {
-            $request->setGlobal();
             $response->head['Content-Type'] = 'text/html';
-
             ob_start();
             try
             {
